@@ -1,9 +1,10 @@
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog
 import json
 import os
+import subprocess
 
 import numpy as np
 import pyautogui
@@ -29,9 +30,11 @@ class BlastRadioController:
     def __init__(self, root):
         self.root = root
         self.root.title("Blast Radio Controller")
-        self.root.minsize(520, 700)
+        self.root.minsize(520, 750)
         self.root.resizable(True, True)
         self.root.configure(bg=self.BG)
+
+        self._ui_ready = False
 
         # Core state
         self.is_broadcasting  = False
@@ -41,36 +44,49 @@ class BlastRadioController:
         self.current_volume   = 0.0
         
         self.window_visible   = False
-        self.start_coords     = None  # These are now RELATIVE to the window
-        self.stop_coords      = None  # These are now RELATIVE to the window
+        self.start_coords     = None
+        self.stop_coords      = None
 
-        # Load saved coordinates
+        # Default settings
+        self.saved_device      = None
+        self.saved_threshold   = 2.0
+        self.saved_silence_sec = 30
+        self.saved_auto_start  = True
+        self.saved_auto_stop   = True
+        self.saved_app_path    = ""
+
+        # Load saved configuration
         self._load_config()
 
         # Plain attributes read by the audio thread
-        self._threshold   = 2.0
-        self._silence_sec = 30
-        self._auto_start  = True
-        self._auto_stop   = True
+        self._threshold   = self.saved_threshold
+        self._silence_sec = self.saved_silence_sec
+        self._auto_start  = self.saved_auto_start
+        self._auto_stop   = self.saved_auto_stop
 
         self._input_devices  = []
         self._stream_restart = threading.Event()
 
-        # Tkinter variables
-        self.device_var      = tk.StringVar()
-        self.threshold_var   = tk.DoubleVar(value=2.0)
-        self.silence_sec_var = tk.IntVar(value=30)
-        self.auto_start_var  = tk.BooleanVar(value=True)
-        self.auto_stop_var   = tk.BooleanVar(value=True)
+        # Tkinter variables initialized with saved values
+        self.device_var      = tk.StringVar(value=self.saved_device if self.saved_device else "")
+        self.threshold_var   = tk.DoubleVar(value=self.saved_threshold)
+        self.silence_sec_var = tk.IntVar(value=self.saved_silence_sec)
+        self.auto_start_var  = tk.BooleanVar(value=self.saved_auto_start)
+        self.auto_stop_var   = tk.BooleanVar(value=self.saved_auto_stop)
+        self.app_path_var    = tk.StringVar(value=self.saved_app_path)
 
-        self.threshold_var.trace_add("write", lambda *_: setattr(self, "_threshold", self.threshold_var.get()))
-        self.silence_sec_var.trace_add("write", lambda *_: setattr(self, "_silence_sec", self.silence_sec_var.get()))
-        self.auto_start_var.trace_add("write", lambda *_: setattr(self, "_auto_start", self.auto_start_var.get()))
-        self.auto_stop_var.trace_add("write", lambda *_: setattr(self, "_auto_stop", self.auto_stop_var.get()))
+        # Traces to update internal state and save config automatically
+        self.threshold_var.trace_add("write", lambda *_: self._on_setting_change("threshold"))
+        self.silence_sec_var.trace_add("write", lambda *_: self._on_setting_change("silence"))
+        self.auto_start_var.trace_add("write", lambda *_: self._on_setting_change("auto_start"))
+        self.auto_stop_var.trace_add("write", lambda *_: self._on_setting_change("auto_stop"))
+        self.app_path_var.trace_add("write", lambda *_: self._on_setting_change("app_path"))
 
         self._setup_styles()
         self._build_ui()
         self._populate_devices()
+
+        self._ui_ready = True
 
         threading.Thread(target=self._audio_thread, daemon=True).start()
         threading.Thread(target=self._window_watcher, daemon=True).start()
@@ -81,23 +97,60 @@ class BlastRadioController:
             try:
                 with open(self.CONFIG_FILE, "r") as f:
                     data = json.load(f)
-                    if data.get("start_coords"):
-                        self.start_coords = tuple(data["start_coords"])
-                    if data.get("stop_coords"):
-                        self.stop_coords = tuple(data["stop_coords"])
+                    if data.get("start_coords"): self.start_coords = tuple(data["start_coords"])
+                    if data.get("stop_coords"): self.stop_coords = tuple(data["stop_coords"])
+                    if "device_name" in data: self.saved_device = data["device_name"]
+                    if "threshold" in data: self.saved_threshold = data["threshold"]
+                    if "silence_sec" in data: self.saved_silence_sec = data["silence_sec"]
+                    if "auto_start" in data: self.saved_auto_start = data["auto_start"]
+                    if "auto_stop" in data: self.saved_auto_stop = data["auto_stop"]
+                    if "app_path" in data: self.saved_app_path = data["app_path"]
             except Exception as e:
                 print(f"Error loading config: {e}")
 
     def _save_config(self):
+        if not self._ui_ready:
+            return
+            
         data = {
             "start_coords": self.start_coords,
-            "stop_coords": self.stop_coords
+            "stop_coords": self.stop_coords,
+            "device_name": self.device_var.get(),
+            "threshold": self.threshold_var.get(),
+            "silence_sec": self.silence_sec_var.get(),
+            "auto_start": self.auto_start_var.get(),
+            "auto_stop": self.auto_stop_var.get(),
+            "app_path": self.app_path_var.get()
         }
         try:
             with open(self.CONFIG_FILE, "w") as f:
                 json.dump(data, f)
         except Exception as e:
             print(f"Error saving config: {e}")
+
+    def _on_setting_change(self, setting):
+        if setting == "threshold":
+            self._threshold = self.threshold_var.get()
+        elif setting == "silence":
+            self._silence_sec = self.silence_sec_var.get()
+        elif setting == "auto_start":
+            self._auto_start = self.auto_start_var.get()
+        elif setting == "auto_stop":
+            self._auto_stop = self.auto_stop_var.get()
+            
+        self._save_config()
+
+    def _on_device_change(self, event):
+        self._stream_restart.set()
+        self._save_config()
+
+    def _browse_app(self):
+        filepath = filedialog.askopenfilename(
+            title="Select Blast Radio Executable",
+            filetypes=(("Executable files", "*.exe"), ("All files", "*.*"))
+        )
+        if filepath:
+            self.app_path_var.set(filepath)
 
     def _setup_styles(self):
         s = ttk.Style()
@@ -131,6 +184,13 @@ class BlastRadioController:
     def _panel_setup(self, p):
         f = self._section(p, "1. WINDOW & BUTTON SETUP")
 
+        # App Path Row
+        path_row = tk.Frame(f, bg=self.PANEL)
+        path_row.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(path_row, text="App Path:", bg=self.PANEL, fg=self.TEXT).pack(side=tk.LEFT)
+        tk.Entry(path_row, textvariable=self.app_path_var, bg=self.ENTRY_BG, fg=self.TEXT, width=35).pack(side=tk.LEFT, padx=5)
+        tk.Button(path_row, text="Browse", bg=self.ENTRY_BG, fg=self.TEXT, relief=tk.FLAT, command=self._browse_app).pack(side=tk.LEFT)
+
         self.win_status_lbl = tk.Label(f, text="Checking for Blast Radio window...", bg=self.PANEL, fg=self.YELLOW, font=("Helvetica", 10, "bold"))
         self.win_status_lbl.pack(anchor=tk.W, pady=(0, 10))
 
@@ -155,7 +215,7 @@ class BlastRadioController:
         
         self._device_dd = ttk.Combobox(f, textvariable=self.device_var, state="readonly")
         self._device_dd.pack(fill=tk.X, pady=(0, 10))
-        self._device_dd.bind("<<ComboboxSelected>>", lambda _: self._stream_restart.set())
+        self._device_dd.bind("<<ComboboxSelected>>", self._on_device_change)
 
         self._vol_canvas = tk.Canvas(f, height=22, bg=self.PANEL, highlightthickness=0)
         self._vol_canvas.pack(fill=tk.X, pady=(0, 10))
@@ -163,7 +223,7 @@ class BlastRadioController:
         row = tk.Frame(f, bg=self.PANEL)
         row.pack(fill=tk.X)
         tk.Label(row, text="Trigger Threshold", bg=self.PANEL, fg=self.TEXT).pack(side=tk.LEFT)
-        self._thresh_lbl = tk.Label(row, text="2.0", width=5, bg=self.PANEL, fg=self.ACCENT, font=("Helvetica", 10, "bold"))
+        self._thresh_lbl = tk.Label(row, text=f"{self.saved_threshold:.1f}", width=5, bg=self.PANEL, fg=self.ACCENT, font=("Helvetica", 10, "bold"))
         self._thresh_lbl.pack(side=tk.RIGHT)
 
         tk.Scale(f, from_=0.1, to=10.0, resolution=0.1, orient=tk.HORIZONTAL, variable=self.threshold_var, bg=self.PANEL, fg=self.TEXT, highlightthickness=0, troughcolor=self.ENTRY_BG, activebackground=self.ACCENT, showvalue=False, command=lambda v: self._thresh_lbl.config(text=f"{float(v):.1f}")).pack(fill=tk.X)
@@ -223,8 +283,13 @@ class BlastRadioController:
             self._input_devices = [(i, d["name"]) for i, d in enumerate(devs) if d["max_input_channels"] > 0]
             names = [n for _, n in self._input_devices]
             self._device_dd["values"] = names
+            
             if names:
-                self._device_dd.current(0)
+                if self.saved_device in names:
+                    self._device_dd.set(self.saved_device)
+                else:
+                    self._device_dd.current(0)
+                    self._save_config()
         except Exception as e:
             self._log(f"Device error: {e}")
 
@@ -251,7 +316,6 @@ class BlastRadioController:
 
             abs_x, abs_y = pyautogui.position()
             
-            # Calculate relative coordinates
             rel_x = abs_x - win.left
             rel_y = abs_y - win.top
             
@@ -283,31 +347,59 @@ class BlastRadioController:
                 self.root.after(0, lambda: self.win_status_lbl.config(text="WARNING: Blast Radio window not found or minimized!", fg=self.ACCENT))
             time.sleep(1)
 
-    def _safe_click(self, rel_coords):
-        if not self.window_visible:
-            self._log("WARNING: Click aborted. Blast Radio window is not visible.")
-            return False
-        
+    def _ensure_window_ready(self):
         win = self._get_blast_window()
         if win:
+            return win
+
+        path = self.app_path_var.get()
+        if path and os.path.exists(path):
+            self._log("Launching Blast Radio...")
             try:
-                win.activate()
-                time.sleep(0.2)
-            except:
-                pass
-            
-            # Convert relative coordinates back to absolute screen coordinates
-            abs_x = win.left + rel_coords[0]
-            abs_y = win.top + rel_coords[1]
-                
-            try:
-                pyautogui.click(abs_x, abs_y)
-                return True
+                subprocess.Popen(path)
+                # Wait up to 10 seconds for the window to appear
+                for _ in range(20):
+                    time.sleep(0.5)
+                    win = self._get_blast_window()
+                    if win:
+                        self._log("Blast Radio launched successfully.")
+                        time.sleep(3) # Give the app a few seconds to fully load its UI
+                        return win
             except Exception as e:
-                self._log(f"Click error: {e}")
-                return False
+                self._log(f"Failed to launch app: {e}")
         else:
-            self._log("WARNING: Click aborted. Window lost.")
+            self._log("Cannot launch app: Path is invalid or not set.")
+            
+        return None
+
+    def _safe_click(self, rel_coords, is_start=False):
+        win = self._get_blast_window()
+        
+        # If we are starting and the window is missing, try to launch it
+        if not win and is_start:
+            win = self._ensure_window_ready()
+            
+        if not win:
+            self._log("WARNING: Click aborted. Blast Radio window not found.")
+            return False
+            
+        # Pull the window up to the front
+        if win.isMinimized:
+            win.restore()
+        try:
+            win.activate()
+            time.sleep(0.5) # Give Windows a moment to bring it to the foreground
+        except:
+            pass
+        
+        abs_x = win.left + rel_coords[0]
+        abs_y = win.top + rel_coords[1]
+            
+        try:
+            pyautogui.click(abs_x, abs_y)
+            return True
+        except Exception as e:
+            self._log(f"Click error: {e}")
             return False
 
     def _audio_thread(self):
@@ -346,7 +438,7 @@ class BlastRadioController:
             return
             
         self.broadcast_locked = True
-        if self._safe_click(self.start_coords):
+        if self._safe_click(self.start_coords, is_start=True):
             self.is_broadcasting = True
             self.broadcast_start = time.time()
             self.silence_start = None
@@ -362,7 +454,7 @@ class BlastRadioController:
             return
             
         self.broadcast_locked = True
-        if self._safe_click(self.stop_coords):
+        if self._safe_click(self.stop_coords, is_start=False):
             self.is_broadcasting = False
             self.broadcast_start = None
             self.silence_start = None
