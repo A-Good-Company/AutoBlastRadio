@@ -41,12 +41,12 @@ class BlastRadioController:
         self.broadcast_locked = False
         self.silence_start    = None
         self.broadcast_start  = None
-        self.current_signal   = 0.0   # live yellow-pixel percentage 0-100
+        self.current_signal   = 0.0
 
         self.window_visible = False
         self.start_coords   = None
         self.stop_coords    = None
-        self.signal_region  = None    # (rel_x, rel_y, w, h) relative to Blast Radio window
+        self.signal_region  = None
 
         # Default settings
         self.saved_threshold   = 5.0
@@ -59,20 +59,20 @@ class BlastRadioController:
 
         self._load_config()
 
-        # Plain attributes read by background thread
         self._threshold   = self.saved_threshold
         self._silence_sec = self.saved_silence_sec
         self._auto_start  = self.saved_auto_start
         self._auto_stop   = self.saved_auto_stop
 
         # Tkinter variables
-        self.threshold_var   = tk.DoubleVar(value=self.saved_threshold)
-        self.silence_sec_var = tk.IntVar(value=self.saved_silence_sec)
-        self.auto_start_var  = tk.BooleanVar(value=self.saved_auto_start)
-        self.auto_stop_var   = tk.BooleanVar(value=self.saved_auto_stop)
-        self.app_path_var    = tk.StringVar(value=self.saved_app_path)
-        self.region_w_var    = tk.IntVar(value=self.saved_region_w)
-        self.region_h_var    = tk.IntVar(value=self.saved_region_h)
+        self.threshold_var    = tk.DoubleVar(value=self.saved_threshold)
+        self.silence_sec_var  = tk.IntVar(value=self.saved_silence_sec)
+        self.auto_start_var   = tk.BooleanVar(value=self.saved_auto_start)
+        self.auto_stop_var    = tk.BooleanVar(value=self.saved_auto_stop)
+        self.app_path_var     = tk.StringVar(value=self.saved_app_path)
+        self.region_w_var     = tk.IntVar(value=self.saved_region_w)
+        self.region_h_var     = tk.IntVar(value=self.saved_region_h)
+        self.show_overlay_var = tk.BooleanVar(value=True)
 
         self.threshold_var.trace_add("write",   lambda *_: self._on_setting_change("threshold"))
         self.silence_sec_var.trace_add("write", lambda *_: self._on_setting_change("silence"))
@@ -84,6 +84,7 @@ class BlastRadioController:
 
         self._setup_styles()
         self._build_ui()
+        self._create_overlay()
 
         self._ui_ready = True
 
@@ -208,10 +209,10 @@ class BlastRadioController:
         btn_frame = tk.Frame(f, bg=self.PANEL)
         btn_frame.pack(fill=tk.X)
 
-        st  = (f"Start Button: Rel X={self.start_coords[0]}, Y={self.start_coords[1]}"
-               if self.start_coords else "Start Button: Not Set")
-        sc  = self.GREEN if self.start_coords else self.DIM
-        self.start_btn_lbl = tk.Label(btn_frame, text=st, bg=self.PANEL, fg=sc)
+        st = (f"Start Button: Rel X={self.start_coords[0]}, Y={self.start_coords[1]}"
+              if self.start_coords else "Start Button: Not Set")
+        self.start_btn_lbl = tk.Label(btn_frame, text=st, bg=self.PANEL,
+                                      fg=self.GREEN if self.start_coords else self.DIM)
         self.start_btn_lbl.grid(row=0, column=0, sticky=tk.W, pady=5)
         tk.Button(btn_frame, text="Pick Start", bg=self.ENTRY_BG, fg=self.TEXT,
                   relief=tk.FLAT,
@@ -219,8 +220,8 @@ class BlastRadioController:
 
         spt = (f"Stop Button: Rel X={self.stop_coords[0]}, Y={self.stop_coords[1]}"
                if self.stop_coords else "Stop Button: Not Set")
-        spc = self.GREEN if self.stop_coords else self.DIM
-        self.stop_btn_lbl = tk.Label(btn_frame, text=spt, bg=self.PANEL, fg=spc)
+        self.stop_btn_lbl = tk.Label(btn_frame, text=spt, bg=self.PANEL,
+                                     fg=self.GREEN if self.stop_coords else self.DIM)
         self.stop_btn_lbl.grid(row=1, column=0, sticky=tk.W, pady=5)
         tk.Button(btn_frame, text="Pick Stop", bg=self.ENTRY_BG, fg=self.TEXT,
                   relief=tk.FLAT,
@@ -249,15 +250,21 @@ class BlastRadioController:
         self._signal_val_lbl.pack(side=tk.RIGHT)
 
         ctrl_row = tk.Frame(f, bg=self.PANEL)
-        ctrl_row.pack(fill=tk.X, pady=(0, 10))
+        ctrl_row.pack(fill=tk.X, pady=(0, 8))
+
         tk.Button(ctrl_row, text="Pick Signal Region", bg=self.ENTRY_BG, fg=self.TEXT,
                   relief=tk.FLAT, command=self._pick_signal_region).pack(side=tk.LEFT)
+
         tk.Label(ctrl_row, text="  W:", bg=self.PANEL, fg=self.TEXT).pack(side=tk.LEFT)
         ttk.Spinbox(ctrl_row, from_=5, to=300, increment=5,
                     textvariable=self.region_w_var, width=5).pack(side=tk.LEFT)
+
         tk.Label(ctrl_row, text="  H:", bg=self.PANEL, fg=self.TEXT).pack(side=tk.LEFT)
         ttk.Spinbox(ctrl_row, from_=5, to=300, increment=5,
                     textvariable=self.region_h_var, width=5).pack(side=tk.LEFT)
+
+        ttk.Checkbutton(ctrl_row, text="  Show overlay on screen",
+                        variable=self.show_overlay_var).pack(side=tk.LEFT, padx=(10, 0))
 
         tk.Label(f, text="Yellow pixel ratio  (white dashed line = threshold)",
                  bg=self.PANEL, fg=self.DIM, font=("Helvetica", 8)).pack(anchor=tk.W)
@@ -369,7 +376,7 @@ class BlastRadioController:
         threading.Thread(target=capture, daemon=True).start()
 
     def _pick_signal_region(self):
-        self._log("Hover over the TOP-LEFT corner of the yellow bars, then wait.")
+        self._log("Minimizing. Hover over the TOP-LEFT corner of the yellow bars, then wait.")
         self.root.iconify()
 
         def capture():
@@ -392,7 +399,8 @@ class BlastRadioController:
             self._save_config()
             self.root.after(0, self.root.deiconify)
             self.root.after(0, self._log,
-                            f"Signal region set. Adjust W/H spinboxes to cover all bars.")
+                            "Signal region anchor saved. Use W/H spinboxes to resize the overlay "
+                            "until it covers all the bars, then watch the percentage climb.")
 
         threading.Thread(target=capture, daemon=True).start()
 
@@ -461,17 +469,135 @@ class BlastRadioController:
             self._log(f"Click error: {e}")
             return False
 
+    # --- OVERLAY ----------------------------------------------------------
+
+    def _create_overlay(self):
+        """
+        Transparent borderless Toplevel that draws a live colored frame
+        directly over the monitored region on screen.
+
+        Black pixels are made transparent via -transparentcolor so only
+        the colored border and label text are visible.
+        """
+        self._overlay = tk.Toplevel(self.root)
+        self._overlay.overrideredirect(True)          # no title bar or chrome
+        self._overlay.wm_attributes('-topmost', True) # always on top
+        try:
+            # Works on Windows: makes all black pixels see-through
+            self._overlay.wm_attributes('-transparentcolor', 'black')
+        except Exception:
+            pass  # graceful fallback on non-Windows
+        self._overlay.configure(bg='black')
+        self._overlay.withdraw()                      # hidden until region is set
+
+        self._overlay_canvas = tk.Canvas(
+            self._overlay, bg='black', highlightthickness=0
+        )
+        self._overlay_canvas.pack(fill=tk.BOTH, expand=True)
+        self._overlay_last_geom = None
+
+    def _update_overlay(self):
+        """
+        Called from _ui_loop every 100 ms.
+        Moves the overlay window to sit over the signal region and redraws it.
+        """
+        if not self.show_overlay_var.get() or not self.signal_region:
+            self._overlay.withdraw()
+            self._overlay_last_geom = None
+            return
+
+        win = self._get_blast_window()
+        if not win or win.isMinimized:
+            self._overlay.withdraw()
+            self._overlay_last_geom = None
+            return
+
+        rel_x, rel_y = self.signal_region[0], self.signal_region[1]
+        rw = self.region_w_var.get()
+        rh = self.region_h_var.get()
+
+        abs_x = win.left + rel_x
+        abs_y = win.top  + rel_y
+
+        pad = 4    # pixels of transparent padding outside the capture box
+        lh  = 20   # height of the label strip sitting above the box
+
+        # Total overlay window dimensions
+        ow = rw + pad * 2
+        oh = rh + pad * 2 + lh
+
+        # Position the overlay so the inner box aligns exactly with the region
+        geom = f"{ow}x{oh}+{abs_x - pad}+{abs_y - lh - pad}"
+        if geom != self._overlay_last_geom:
+            self._overlay.geometry(geom)
+            self._overlay_last_geom = geom
+
+        self._overlay.deiconify()
+        self._draw_overlay(ow, oh, lh, pad, rw, rh)
+
+    def _draw_overlay(self, ow, oh, lh, pad, rw, rh):
+        """Render the border frame and live label onto the overlay canvas."""
+        c     = self._overlay_canvas
+        color = self.GREEN if self.current_signal > self._threshold else self.ACCENT
+        bw    = 2   # border thickness in pixels
+        cm    = 10  # corner accent length
+
+        c.configure(width=ow, height=oh)
+        c.delete("all")
+
+        # Label strip above the capture box
+        c.create_text(
+            ow // 2, lh // 2,
+            text=f"Signal: {self.current_signal:.1f}%  |  Threshold: {self._threshold:.1f}%",
+            fill=color,
+            font=("Helvetica", 8, "bold"),
+            anchor='center'
+        )
+
+        # The capture box sits below the label strip
+        bx1 = 0
+        by1 = lh
+        bx2 = ow
+        by2 = oh
+
+        # Build the border from four filled rectangles so the interior
+        # stays black (transparent) and only the edges are visible
+        # Top edge
+        c.create_rectangle(bx1,       by1,       bx2,       by1 + bw, fill=color, outline='')
+        # Bottom edge
+        c.create_rectangle(bx1,       by2 - bw,  bx2,       by2,      fill=color, outline='')
+        # Left edge
+        c.create_rectangle(bx1,       by1,       bx1 + bw,  by2,      fill=color, outline='')
+        # Right edge
+        c.create_rectangle(bx2 - bw,  by1,       bx2,       by2,      fill=color, outline='')
+
+        # Corner L-shaped accent marks for extra visibility
+        # These are drawn on top of (and slightly thicker than) the main border
+        ct = bw + 1
+        corners = [
+            # Top-left
+            [(bx1, by1, bx1 + cm, by1 + ct), (bx1, by1, bx1 + ct, by1 + cm)],
+            # Top-right
+            [(bx2 - cm, by1, bx2, by1 + ct), (bx2 - ct, by1, bx2, by1 + cm)],
+            # Bottom-left
+            [(bx1, by2 - ct, bx1 + cm, by2), (bx1, by2 - cm, bx1 + ct, by2)],
+            # Bottom-right
+            [(bx2 - cm, by2 - ct, bx2, by2), (bx2 - ct, by2 - cm, bx2, by2)],
+        ]
+        for pair in corners:
+            for rect in pair:
+                c.create_rectangle(*rect, fill=color, outline='')
+
     # --- SIGNAL DETECTION -------------------------------------------------
 
     def _measure_signal(self):
         """
-        Take a screenshot of the configured region inside the Blast Radio window.
-        Count pixels matching the amber/yellow bar color.
-        Return the percentage of matching pixels (0.0 to 100.0).
+        Screenshot the configured region inside the Blast Radio window.
+        Count pixels matching the amber/yellow bar color and return 0-100 percent.
 
         Color criteria for the Blast Radio yellow bars (approx #f5a623):
           R > 170, G > 100, B < 100, and R - B > 100
-        Adjust these values if your bars use a different shade.
+        Adjust if your version uses a different bar color.
         """
         if not self.signal_region:
             return 0.0
@@ -490,24 +616,22 @@ class BlastRadioController:
 
         try:
             img = pyautogui.screenshot(region=(abs_x, abs_y, w, h))
-            arr = np.array(img)                      # shape (H, W, 3), dtype uint8, RGB
+            arr = np.array(img)                       # (H, W, 3) uint8 RGB
             r   = arr[:, :, 0].astype(np.int32)
             g   = arr[:, :, 1].astype(np.int32)
             b   = arr[:, :, 2].astype(np.int32)
-
-            yellow_mask  = (r > 170) & (g > 100) & (b < 100) & ((r - b) > 100)
-            yellow_count = float(np.sum(yellow_mask))
-            return (yellow_count / (w * h)) * 100.0
+            mask  = (r > 170) & (g > 100) & (b < 100) & ((r - b) > 100)
+            count = float(np.sum(mask))
+            return (count / (w * h)) * 100.0
         except Exception:
             return 0.0
 
     def _screen_monitor_thread(self):
-        """Runs every 250 ms. Measures the bar signal and drives auto start/stop."""
+        """Samples the bar region every 250 ms and drives auto start/stop."""
         while True:
-            signal = self._measure_signal()
-            self.current_signal = signal
+            self.current_signal = self._measure_signal()
 
-            if signal > self._threshold:
+            if self.current_signal > self._threshold:
                 self.silence_start = None
                 if self._auto_start and not self.is_broadcasting and not self.broadcast_locked:
                     self.root.after(0, self._do_start, "auto")
@@ -587,6 +711,7 @@ class BlastRadioController:
     def _ui_loop(self):
         self._draw_signal_bar()
         self._refresh_broadcast_panel()
+        self._update_overlay()          # reposition and repaint the screen overlay
         self.root.after(100, self._ui_loop)
 
     def _draw_signal_bar(self):
@@ -620,7 +745,7 @@ class BlastRadioController:
 
         if self.is_broadcasting and self._auto_stop and self.silence_start is not None:
             remaining = max(0, self._silence_sec - (time.time() - self.silence_start))
-            self._silence_lbl.config(text=f"No signal detected - stopping in {remaining:.0f}s")
+            self._silence_lbl.config(text=f"No signal - stopping in {remaining:.0f}s")
         elif self.is_broadcasting:
             self._silence_lbl.config(text="")
 
